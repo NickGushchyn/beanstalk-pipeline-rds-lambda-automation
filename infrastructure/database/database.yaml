@@ -1,0 +1,73 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Database'
+Parameters:
+  DatabaseNameSSMParamName:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+  DatabaseUserSSMParamName:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: Database admin account name
+  DatabasePasswordSSMParamName:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+  DBInstanceType:
+    Description: Instance Type for Database
+    Type: String
+    Default: db.t2.micro
+    AllowedValues:
+      - db.t2.micro
+      - db.m1.small
+      - db.m1.medium
+      - db.m1.large
+Resources:
+  InstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: RDS allows ingress from EC2 instances in this group.
+      SecurityGroupIngress: []
+  DBEC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Open database for access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '3306'
+          ToPort: '3306'
+          SourceSecurityGroupId: !GetAtt 
+            - InstanceSecurityGroup
+            - GroupId
+  Database:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: MySQL
+      DBName: !Ref DatabaseNameSSMParamName
+      MasterUsername: !Ref DatabaseUserSSMParamName
+      DBInstanceClass: !Ref DBInstanceType
+      VPCSecurityGroups:
+        - !GetAtt 
+          - DBEC2SecurityGroup
+          - GroupId
+      AllocatedStorage: '5'
+      MasterUserPassword: !Ref DatabasePasswordSSMParamName
+Outputs:
+  DatabaseNameSSMParamName:
+    Value: !Ref DatabaseNameSSMParamName
+    Export:
+      Name: DBName
+  DatabaseAddress:
+    Value: !GetAtt Database.Endpoint.Address
+    Export:
+      Name: DBAddress
+  DatabasePort:
+    Value: !GetAtt Database.Endpoint.Port
+    Export:
+      Name: DBPort
+  InstanceSecurityGroup:
+    Value: !Ref InstanceSecurityGroup
+  DatabasePasswordSSMParamName:
+    Value: !Ref DatabasePasswordSSMParamName
+    Export:
+      Name: DBPass
+  DatabaseUserSSMParamName:
+    Value: !Ref DatabaseUserSSMParamName
+    Export:
+      Name: DBUser

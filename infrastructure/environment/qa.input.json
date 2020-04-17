@@ -1,0 +1,5 @@
+{
+    "Parameters": {
+        "InstanceType": "t2.micro"
+    }
+}

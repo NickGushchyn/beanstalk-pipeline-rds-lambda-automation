@@ -1,0 +1,382 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Pipeline'
+Parameters:
+  ApplicationName:
+    Type: String
+  CodeCommitRepoName:
+    Type: String
+  CodeCommitBranch:
+    Type: String
+  ImageRepo:
+    Type: String
+  Database:
+    Type: String
+    NoEcho: true
+  User:
+    Type: String
+    NoEcho: true
+  Password:
+    Type: String
+    NoEcho: true
+  SshKey:
+    Type: String
+  CertificateArn:
+    Type: String
+  Slack:
+    Type: String
+    NoEcho: true
+  SlackBucket:
+    Type: String
+Resources:
+  IamRoleLambdaExecution:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: '/'
+  IamPolicyLambdaExecution:
+    Type: AWS::IAM::Policy
+    DependsOn: IamRoleLambdaExecution
+    Properties:
+      PolicyName: IamPolicyLambdaExecution
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:*
+          Resource: '*'
+      Roles:
+      - Ref: IamRoleLambdaExecution
+  SlackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: slack.handler
+      Timeout: 5
+      Role:
+        Fn::GetAtt:
+        - IamRoleLambdaExecution
+        - Arn
+      Code:
+        S3Bucket: !Ref SlackBucket
+        S3Key: 'slack.js.zip'
+      Runtime: nodejs6.10
+      Environment:
+        Variables:
+          SLACK_HOOK_URL: !Ref Slack
+  BuildEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: 'BuildEventRule'
+      EventPattern:
+        source:
+        - 'aws.codebuild'
+        detail-type:
+        - 'CodeBuild Build State Change'
+        detail:
+          build-status:
+          - 'IN_PROGRESS'
+          - 'SUCCEEDED'
+          - 'FAILED'
+          - 'STOPPED'
+      State: 'ENABLED'
+      Targets:
+        -
+         Arn: !GetAtt SlackFunction.Arn
+         Id: 'BuildRuleLambdaTarget'
+        
+#
+# Permission for CloudWatch to invoke our Lambda
+#
+  PermissionForBuildEventsToInvokeLambda:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref SlackFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt BuildEventRule.Arn
+  ECR:
+    DeletionPolicy: Retain
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ImageRepo
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:role/${ECSRole}
+            Action:
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:PutImage"
+              - "ecr:InitiateLayerUpload"
+              - "ecr:UploadLayerPart"
+              - "ecr:CompleteLayerUpload"
+  SSMName:
+    Type: "AWS::SSM::Parameter"
+    Properties: 
+      Name: db_name
+      Type: String
+      Value: !Ref Database
+  SSMPass:
+    Type: "AWS::SSM::Parameter"
+    Properties: 
+      Name: db_pass
+      Type: String
+      Value: !Ref Password
+  SSMUser:
+    Type: "AWS::SSM::Parameter"
+    Properties: 
+      Name: db_user
+      Type: String
+      Value: !Ref User
+  ArtifactsBucket:
+    DependsOn: CloudFormationRole
+    DeletionPolicy: Retain
+    Type: 'AWS::S3::Bucket'
+  ECSRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - 'ecs.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AdministratorAccess'
+  PipelineRole:
+    DependsOn: CloudFormationRole
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - 'codepipeline.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AdministratorAccess'
+  CloudFormationRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - 'cloudformation.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AdministratorAccess'
+  CodeBuildRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - 'codebuild.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AdministratorAccess'
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CloudFormationRole
+    Properties:
+      Description: Build docker image
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:17.09.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - 
+           Name: ECR
+           Value: !Ref ImageRepo
+      Name: !Ref ApplicationName
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 5
+  Pipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactsBucket
+      Name: !Ref ApplicationName
+      RestartExecutionOnUpdate: true
+      RoleArn: !Sub '${PipelineRole.Arn}'
+      Stages:
+      - Name: Source
+        Actions:
+
+        - Name: SourceAction
+          ActionTypeId: 
+            Category: Source
+            Owner: AWS
+            Provider: CodeCommit
+            Version: 1
+          Configuration:
+            RepositoryName: !Ref CodeCommitRepoName
+            BranchName: !Ref CodeCommitBranch
+          OutputArtifacts:
+          - Name: Zip
+          RunOrder: 1
+
+      - Name: DeployPipeline
+        Actions:
+        - Name: DeployPipelineAction
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: 1
+          Configuration:
+            ActionMode: CREATE_UPDATE
+            Capabilities: CAPABILITY_IAM
+            RoleArn: !Sub '${CloudFormationRole.Arn}'
+            StackName: !Ref ApplicationName
+            TemplatePath: 'Zip::infrastructure/pipeline.yaml'
+            ParameterOverrides: !Sub '{"ApplicationName": "${ApplicationName}", "CodeCommitRepoName": "${CodeCommitRepoName}", "CodeCommitBranch": "${CodeCommitBranch}", "Database": "${Database}", "User": "${User}", "Password": "${Password}", "ImageRepo": "${ImageRepo}", "CertificateArn": "${CertificateArn}", "SshKey": "${SshKey}", "Slack": "${Slack}", "SlackBucket": "${SlackBucket}"}'
+          InputArtifacts:
+          - Name: Zip
+          RunOrder: 1
+
+      - Name: Build
+        Actions:
+        - Name: BuildDockerImage
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Provider: CodeBuild
+            Version: 1
+          Configuration:
+            ProjectName: !Ref CodeBuildProject
+          InputArtifacts:
+          - Name: Zip
+          OutputArtifacts:
+          - Name: ImageDefinitions
+          RunOrder: 1
+
+      - Name: DeployApplication
+        Actions:
+        - Name: DeployApplicationAction
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: 1
+          Configuration:
+            ActionMode: CREATE_UPDATE
+            Capabilities: CAPABILITY_IAM
+            RoleArn: !Sub '${CloudFormationRole.Arn}'
+            StackName: !Sub '${ApplicationName}-application'
+            TemplateConfiguration: 'Zip::infrastructure/application/input.json'
+            TemplatePath: 'Zip::infrastructure/application/application.yaml'
+            ParameterOverrides: !Sub '{"ApplicationName": "${ApplicationName}"}'
+          InputArtifacts:
+          - Name: Zip
+          RunOrder: 1
+
+      - Name: DeployQA
+        Actions:
+        - Name: DeployDatabase
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: 1
+          Configuration:
+            ActionMode: CREATE_UPDATE
+            Capabilities: CAPABILITY_IAM
+            RoleArn: !Sub '${CloudFormationRole.Arn}'
+            StackName: !Sub '${ApplicationName}-qa-database'
+            OutputFileName: 'output.json'
+            TemplateConfiguration: 'Zip::infrastructure/database/qa.input.json'
+            TemplatePath: 'Zip::infrastructure/database/database.yaml'
+          InputArtifacts:
+          - Name: Zip
+          OutputArtifacts:
+          - Name: QADB
+          RunOrder: 1
+
+        - Name: DeployEnvironment
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: 1
+          Configuration:
+            ActionMode: CREATE_UPDATE
+            Capabilities: CAPABILITY_IAM
+            RoleArn: !Sub '${CloudFormationRole.Arn}'
+            StackName: !Sub '${ApplicationName}-qa'
+            OutputFileName: 'output.json'
+            TemplateConfiguration: 'Zip::infrastructure/environment/qa.input.json'
+            TemplatePath: 'Zip::infrastructure/environment/environment.yaml'
+            ParameterOverrides: !Sub |
+              {
+                "ApplicationName": "${ApplicationName}", 
+                "EnvironmentName": "${ApplicationName}-qa",
+                "DBInstanceSecurityGroup": { "Fn::GetParam" : ["QADB", "output.json", "InstanceSecurityGroup"]},
+                "DatabaseNameSSMParamName": { "Fn::GetParam" : ["QADB", "output.json", "DatabaseNameSSMParamName"]},
+                "DatabaseAddress": { "Fn::GetParam" : ["QADB", "output.json", "DatabaseAddress"]},
+                "DatabasePort": { "Fn::GetParam" : ["QADB", "output.json", "DatabasePort"]},
+                "DatabasePasswordSSMParamName": { "Fn::GetParam" : ["QADB", "output.json", "DatabasePasswordSSMParamName"]},
+                "DatabaseUserSSMParamName": { "Fn::GetParam" : ["QADB", "output.json", "DatabaseUserSSMParamName"]}
+              }    
+          InputArtifacts:
+          - Name: Zip
+          - Name: QADB
+          OutputArtifacts:
+          - Name: QA
+          RunOrder: 2
+
+        - Name: DeployApplication
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: ElasticBeanstalk
+            Version: 1
+          Configuration:
+            ApplicationName: !Ref ApplicationName
+            EnvironmentName: !Sub '${ApplicationName}-qa'
+          InputArtifacts:
+          - Name: Zip
+          RunOrder: 3
+Outputs:
+  CertificateArn:
+    Value: !Ref CertificateArn
+    Export:
+      Name: SSLArn
+  SshKey:
+    Value: !Ref SshKey
+    Export:
+      Name: SSHKey

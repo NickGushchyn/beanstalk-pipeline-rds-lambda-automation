@@ -1,0 +1,7 @@
+{
+  "Parameters": {
+    "DatabaseNameSSMParamName": "db_name",
+    "DatabasePasswordSSMParamName": "db_pass",
+    "DatabaseUserSSMParamName": "db_user"
+  }
+}

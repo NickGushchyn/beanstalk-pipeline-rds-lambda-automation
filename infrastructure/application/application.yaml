@@ -1,0 +1,15 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Application'
+Parameters:
+  ApplicationName:
+    Type: String
+  ArtifactsBucketName:
+    Type: String
+  ArtifactObjectKey:
+    Type: String
+Resources:
+  Application:
+    Type: 'AWS::ElasticBeanstalk::Application'
+    Properties:
+      ApplicationName: !Ref ApplicationName
